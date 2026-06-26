@@ -1,0 +1,19 @@
+# Which model to fit and its hyperparameters. Hand-edited.
+# Row selection + loss weighting live in dataset_config.yaml.
+
+model: lightgbm       # ridge | lightgbm
+
+ridge:
+  alpha: 1.0          # L2 strength; raise to regularize harder
+
+# Gradient-boosted trees. One model is fit per PC (multi-output wrapper), so each
+# component gets its own trees — PC0 can be fit hard while the tail stays simple.
+lightgbm:
+  n_estimators: 400
+  learning_rate: 0.05
+  num_leaves: 31
+  min_child_samples: 50    # raise to regularize (min rows per leaf)
+  subsample: 0.8
+  subsample_freq: 1        # subsample only bites when freq > 0
+  colsample_bytree: 0.8
+  verbose: -1

@@ -1,0 +1,24 @@
+# Global settings for the curve toolchain — hand-edited, shared across tools.
+# This file holds ONLY choices. The fitted PCA codebook (a result) lives at
+# paths.codebook. After changing any "codebook-affecting" setting below
+# (n_components, grid_points, time_axis, absolute_days_cap, log_transform),
+# re-run:  uv run python compress_curves.py fit
+
+# --- compression / PCA ---
+n_components: 8
+grid_points: 50                  # points on the common resampling grid
+time_axis: normalized_lifetime   # normalized_lifetime | absolute_days
+absolute_days_cap: 90            # only used when time_axis == absolute_days
+log_transform: true              # PCA in log-CTR space (recommended: CTR is skewed, >0)
+
+# --- data schema ---
+columns:
+  id: ad_id
+  time: delivery_days
+  value: cumu_ctr
+
+# --- file locations ---
+paths:
+  laps: data/laps.parquet            # input time series
+  scores: data/scores.parquet        # output: one row per ad, the N scores
+  codebook: data/curve_codebook.yaml # output: fitted PCA codebook (a result, not a setting)

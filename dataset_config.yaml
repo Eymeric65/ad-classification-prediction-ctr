@@ -1,0 +1,32 @@
+# Which ads to train the score-predictor on, and how to weight per-component error.
+# Hand-edited. This config is about ROWS and the LOSS, not about the model
+# (model choice + hyperparameters live in pipeline_config.yaml).
+
+# --- row selection ----------------------------------------------------------
+rows:
+  # Annotation schema to keep: full | light | any.
+  # The prediction set is 100% "full", so training on "full" matches it best,
+  # at the cost of a smaller N. Switch to "any" to use every ad.
+  ann_schema: any
+
+# --- which feature groups to feed the model ---------------------------------
+# Column names come from dataset.py (CAT_COLS / AREA_COLS / ANN_FLAG_COLS).
+features:
+  categorical: true   # CAT_COLS      - industry, goal, format, CTA type, size
+  area: true          # AREA_COLS     - 10-dim image-composition vector
+  ann_flags: true     # ANN_FLAG_COLS - presence flags + face/text counts
+
+# --- train/test split -------------------------------------------------------
+test_size: 0.2
+random_state: 42
+
+# --- per-component RMSE weighting -------------------------------------------
+# PC0 carries ~98.5% of curve variance, so the components are NOT equally
+# important. The aggregate score-space RMSE is a weighted average of the
+# per-component RMSEs using these weights.
+#   equal              -> every PC counts the same
+#   explained_variance -> weight by each PC's explained_variance_ratio (favors PC0)
+#   manual             -> use the explicit list below
+weighting:
+  scheme: explained_variance
+  manual: [1, 1, 1, 1, 1, 1, 1, 1]
