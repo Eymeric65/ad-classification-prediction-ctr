@@ -15,10 +15,27 @@ features:
   categorical: true   # CAT_COLS      - industry, goal, format, CTA type, size
   area: true          # AREA_COLS     - 10-dim image-composition vector
   ann_flags: true     # ANN_FLAG_COLS - presence flags + face/text counts
+  date: true          # DATE_COLS     - cyclical release-month / day-of-year (seasonality)
 
 # --- train/test split -------------------------------------------------------
 test_size: 0.2
 random_state: 42
+
+# --- per-AD sample weighting (the high-CTR tail lever) ----------------------
+# Weights each TRAINING ad in the loss by its actual curve level, so the model
+# stops hugging the boring middle and attends to the outliers we actually care
+# about. Trades middle accuracy for tail accuracy — that's the point.
+#   none      -> uniform (default model behaviour)
+#   power     -> w = (level / median_level) ** power     (power>0 favors high CTR)
+#   threshold -> ads with mean CTR >= `threshold` get `boost`, rest get 1.0
+# `clip` caps the max/min weight ratio so the heavy tail can't produce runaway
+# weights. Computed from training targets only (no leakage).
+sample_weighting:
+  scheme: threshold  # Pareto-best: +21% tail skill while the typical ad still beats baseline
+  power: 0.75
+  threshold: 0.012
+  boost: 5.0
+  clip: 20
 
 # --- per-component RMSE weighting -------------------------------------------
 # PC0 carries ~98.5% of curve variance, so the components are NOT equally

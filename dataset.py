@@ -6,6 +6,7 @@ Grain:
     ads   - one row per `ad_id` (static creative attrs + annotation features)
     laps  - one row per (ad_id, delivery_days): cumulative metrics over time
 """
+import numpy as np
 import pandas as pd
 
 DATA = "data"
@@ -21,15 +22,42 @@ ANN_FLAG_COLS = ["ann_has_product", "ann_has_character", "ann_has_button",
 CAT_COLS = ["digital_large", "digital_small", "campaign_goal",
             "creative_format", "creative_call_to_action_type", "creative_size"]
 
+# Release-date seasonality features, derived from `min_date` (see add_date_features).
+DATE_COLS = ["month_sin", "month_cos", "doy_sin", "doy_cos"]
+
+
+def _cyc(values, period):
+    """Map a periodic integer (month, day-of-year) to a (sin, cos) pair on the unit circle,
+    so the encoding is continuous across the wrap-around (December is adjacent to January)."""
+    rad = 2.0 * np.pi * np.asarray(values, float) / period
+    return np.sin(rad), np.cos(rad)
+
+
+def add_date_features(df, date_col="min_date"):
+    """Add cyclical calendar features from the ad's release date (`min_date`).
+
+    Encodes SEASON, not absolute time: month and day-of-year are sin/cos encoded.
+    Year is deliberately omitted — the prediction set is a forward holdout (all 2023),
+    where a raw year carries no transferable signal, whereas cyclical season ("August
+    behaves like August") carries across years. `min_date` exists in both the train and
+    predict tables, so these are leakage-free and available at predict time.
+    """
+    out = df.copy()
+    if date_col in out.columns:
+        d = pd.to_datetime(out[date_col])
+        out["month_sin"], out["month_cos"] = _cyc(d.dt.month.to_numpy(), 12)
+        out["doy_sin"], out["doy_cos"] = _cyc(d.dt.dayofyear.to_numpy(), 365.25)
+    return out
+
 
 def load_ads():
     """Static creative table, indexed by ad_id (training set)."""
-    return pd.read_parquet(f"{DATA}/ads.parquet")
+    return add_date_features(pd.read_parquet(f"{DATA}/ads.parquet"))
 
 
 def load_predict():
     """Prediction set — same columns as load_ads(), but no laps exist for these."""
-    return pd.read_parquet(f"{DATA}/ads_predict.parquet")
+    return add_date_features(pd.read_parquet(f"{DATA}/ads_predict.parquet"))
 
 
 def load_laps():
