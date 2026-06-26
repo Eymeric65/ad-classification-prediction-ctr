@@ -24,6 +24,11 @@ import yaml
 
 CONFIG_PATH = "curve_config.yaml"
 
+# CTR floor before the log transform. The yda platform has a small fraction of early laps
+# with impressions but zero clicks (cumu_ctr == 0); log(0) would be -inf and break the PCA
+# fit. 1e-6 (0.0001%) sits well below any real CTR, so genuine curves are untouched.
+CTR_EPS = 1e-6
+
 # Settings that change what the codebook looks like — stamped into the codebook so
 # encode/decode can warn if the config drifted since the last fit.
 CODEBOOK_KEYS = ["n_components", "grid_points", "time_axis", "absolute_days_cap",
@@ -74,7 +79,7 @@ def _resample_one(days, values, cfg, grid):
     """One ad's (days, values) -> fixed-length vector on the common grid."""
     order = np.argsort(days)
     days, values = days[order], values[order]
-    y = np.log(values) if cfg["log_transform"] else values
+    y = np.log(np.maximum(values, CTR_EPS)) if cfg["log_transform"] else values
 
     if cfg["time_axis"] == "absolute_days":
         cap = cfg["absolute_days_cap"]

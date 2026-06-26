@@ -6,6 +6,8 @@ Grain:
     ads   - one row per `ad_id` (static creative attrs + annotation features)
     laps  - one row per (ad_id, delivery_days): cumulative metrics over time
 """
+import os
+
 import numpy as np
 import pandas as pd
 
@@ -19,11 +21,28 @@ AREA_COLS = [
 ]
 ANN_FLAG_COLS = ["ann_has_product", "ann_has_character", "ann_has_button",
                  "n_face_tags", "n_text_tags"]
-CAT_COLS = ["digital_large", "digital_small", "campaign_goal",
-            "creative_format", "creative_call_to_action_type", "creative_size"]
+# Union of static categoricals across both training platforms (yda + lap). A creative from
+# one platform carries "__NA__" for the other platform's columns (set in build_dataset.py),
+# which also acts as a free platform indicator. `device`/`purpose_*` come from yda;
+# `creative_format`/`creative_call_to_action_type` from lap.
+CAT_COLS = ["digital_large", "digital_small", "campaign_goal", "creative_size",
+            "creative_format", "creative_call_to_action_type",
+            "device", "purpose_of_conversion_measurement"]
 
 # Release-date seasonality features, derived from `min_date` (see add_date_features).
 DATE_COLS = ["month_sin", "month_cos", "doy_sin", "doy_cos"]
+
+# Segmentation-mask features, precomputed by extract_image_features.py and cached in
+# data/image_features.parquet (joined on `filename`). Per content category: coverage
+# (fraction of the banner) and the normalized centroid (cx, cy in 0..1 — where on the
+# banner that content sits). Both platforms ship masks, so these cover every ad; a
+# category absent from an image has coverage 0 and NaN centroid (handled by the imputer).
+IMG_CATS = ["person_photo", "person_illust", "animal_photo", "animal_illust",
+            "product_photo", "product_illust", "logo", "text",
+            "other_photo", "other_illust"]
+IMG_COLS = ([f"img_cov_{c}" for c in IMG_CATS]
+            + [f"img_cx_{c}" for c in IMG_CATS]
+            + [f"img_cy_{c}" for c in IMG_CATS])
 
 
 def _cyc(values, period):
@@ -50,14 +69,25 @@ def add_date_features(df, date_col="min_date"):
     return out
 
 
+def add_image_features(df, path=f"{DATA}/image_features.parquet"):
+    """Left-join the cached mask features (coverage + centroid per category) on `filename`.
+
+    Features are precomputed once by extract_image_features.py; this only reads the cache.
+    A creative with no mask (or before the cache is built) gets all-NaN image columns.
+    """
+    if "filename" in df.columns and os.path.exists(path):
+        df = df.merge(pd.read_parquet(path), on="filename", how="left")
+    return df
+
+
 def load_ads():
     """Static creative table, indexed by ad_id (training set)."""
-    return add_date_features(pd.read_parquet(f"{DATA}/ads.parquet"))
+    return add_image_features(add_date_features(pd.read_parquet(f"{DATA}/ads.parquet")))
 
 
 def load_predict():
     """Prediction set — same columns as load_ads(), but no laps exist for these."""
-    return add_date_features(pd.read_parquet(f"{DATA}/ads_predict.parquet"))
+    return add_image_features(add_date_features(pd.read_parquet(f"{DATA}/ads_predict.parquet")))
 
 
 def load_laps():

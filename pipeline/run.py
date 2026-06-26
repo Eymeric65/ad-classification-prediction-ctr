@@ -33,7 +33,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from compress_curves import decode, load_codebook, load_settings
-from dataset import ANN_FLAG_COLS, AREA_COLS, CAT_COLS, DATE_COLS, load_ads
+from dataset import ANN_FLAG_COLS, AREA_COLS, CAT_COLS, DATE_COLS, IMG_COLS, load_ads
 
 DATASET_CONFIG = "dataset_config.yaml"
 PIPELINE_CONFIG = "pipeline_config.yaml"
@@ -59,6 +59,8 @@ def feature_columns(dcfg):
         num += ANN_FLAG_COLS
     if groups.get("date"):
         num += DATE_COLS
+    if groups.get("image"):
+        num += IMG_COLS
     return cat, num
 
 
