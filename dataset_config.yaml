@@ -34,12 +34,12 @@ random_state: 42
 sample_weighting:
   scheme: threshold  # Pareto-best: max tail skill while the typical ad still beats baseline
   power: 0.75
-  # Swept on the two-platform population (held-out, lightgbm): 0.0115 is the knee — the
-  # highest tail skill (+31.3%) of any threshold that keeps middle skill positive (+1.8%).
-  # Below ~0.011 the everyday ad drops under baseline; above it the high-CTR tail erodes.
+  # Jointly tuned with the model (held-out, lightgbm 800/95). threshold=0.0115 is the knee;
+  # boost=8 lifts tail skill to ~34.9% (from ~33.5% at boost 5) while the everyday ad keeps
+  # a comfortable +6.5% margin. boost>8 buys ~1pp more tail but drives the middle negative.
   threshold: 0.0115
-  boost: 5.0
-  clip: 20
+  boost: 8.0
+  clip: 30
 
 # --- per-component RMSE weighting -------------------------------------------
 # PC0 carries ~98.5% of curve variance, so the components are NOT equally
