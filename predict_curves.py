@@ -62,7 +62,10 @@ def fit_full(ccfg, dcfg, pcfg, cb):
     X, Y = df[cat + num], df[pc_cols].to_numpy(float)
 
     est = build_estimator(pcfg, cat, num)
-    sw = sample_weights(Y, dcfg, ccfg, cb)              # same loss weighting as run.py; None -> uniform
+    # same loss weighting as run.py (None -> uniform). dates feed optional recency
+    # weighting; here the anchor is the newest training ad (~2023-04-30), the closest
+    # analogue to the forward predict set.
+    sw = sample_weights(Y, dcfg, ccfg, cb, dates=pd.to_datetime(df["min_date"]))
     fit_params = {} if sw is None else {"reg__sample_weight": sw}
     est.fit(X, Y, **fit_params)
     print(f"  trained {pcfg['model']} on {len(X):,} ads "

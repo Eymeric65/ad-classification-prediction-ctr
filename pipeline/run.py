@@ -77,7 +77,12 @@ def select_rows(ads, dcfg):
 
 
 def assemble(ccfg, dcfg):
-    """Join features to PCA-score targets. Returns (X df, Y array, cat, num, pc_cols)."""
+    """Join features to PCA-score targets.
+
+    Returns (X df, Y array, cat, num, pc_cols, dates) — `dates` is each ad's `min_date`
+    (release date), carried alongside so the loss can apply recency weighting (it is NOT
+    a model feature). Aligned row-for-row with X / Y.
+    """
     ads = select_rows(load_ads(), dcfg)
     scores = pd.read_parquet(ccfg["paths"]["scores"])
     id_col = ccfg["columns"]["id"]
@@ -88,7 +93,8 @@ def assemble(ccfg, dcfg):
         raise SystemExit("no overlap between ads and scores — did you run `compress_curves.py fit`?")
 
     cat, num = feature_columns(dcfg)
-    return df[cat + num], df[pc_cols].to_numpy(float), cat, num, pc_cols
+    dates = pd.to_datetime(df["min_date"]).reset_index(drop=True)
+    return df[cat + num], df[pc_cols].to_numpy(float), cat, num, pc_cols, dates
 
 
 # ---- model ------------------------------------------------------------------
@@ -115,23 +121,62 @@ def build_estimator(pcfg, cat, num):
 
 # ---- metrics ----------------------------------------------------------------
 
-def sample_weights(Y, dcfg, ccfg, cb):
-    """Per-AD training weight, to make the loss attend to the high-CTR tail.
+def recency_weights(dates, half_life):
+    """Exponential time-decay weight, anchored on the most recent training ad.
 
-    Weight is a function of each ad's actual curve level (mean cumulative CTR,
+    An ad released `half_life` days before the freshest training ad gets half the
+    weight; the freshest ad gets 1.0. Because the real prediction set is a forward
+    holdout (training ends ~2023-04-30, predict is 2023-05+), the most recent training
+    ads are the closest analogue to the predict regime — recency weighting leans the
+    fit toward them, which measurably narrows the temporal-drift gap (see VALIDATION.md).
+    Anchoring on max(dates) makes it self-calibrating: each fit uses its own newest ad,
+    so the same half_life transfers between held-out folds and the full-data production fit.
+    """
+    d = pd.to_datetime(pd.Series(np.asarray(dates)).reset_index(drop=True))
+    age = (d.max() - d).dt.days.to_numpy(float)
+    return 0.5 ** (age / float(half_life))
+
+
+def sample_weights(Y, dcfg, ccfg, cb, dates=None):
+    """Per-AD training weight, to make the loss attend to the high-CTR tail (and,
+    optionally, to recent ads).
+
+    The level term is a function of each ad's actual curve level (mean cumulative CTR,
     decoded from its PCA scores). This is the clean alternative to oversampling
     outliers: same effect on the loss, no row duplication, continuously tunable.
     Computed from training targets only — never touches the test set.
       none      -> uniform (1.0 everywhere)
       power     -> w = (level / median_level) ** gamma   (gamma>0 favors high CTR)
       threshold -> ads with level >= `threshold` get `boost`, the rest get 1.0
-    Returns None for `none` (so we don't pass a weight to .fit at all).
+    If `sample_weighting.recency.half_life` is set, the level weight is multiplied by an
+    exponential time-decay (see recency_weights) — `dates` (each ad's min_date, aligned
+    to Y) must then be supplied. Returns None only when neither term is active.
     """
     sw = dcfg.get("sample_weighting") or {}
     scheme = sw.get("scheme", "none")
-    if scheme == "none":
+    half_life = (sw.get("recency") or {}).get("half_life")
+    if scheme == "none" and not half_life:
         return None
-    level = decode(Y, ccfg, cb).mean(axis=1)          # per-ad actual mean cumulative CTR
+    if scheme == "none":
+        w = np.ones(len(Y))                            # recency-only weighting
+    else:
+        level = decode(Y, ccfg, cb).mean(axis=1)       # per-ad actual mean cumulative CTR
+        w = _level_weights(level, sw)
+    if half_life:
+        if dates is None:
+            raise SystemExit("sample_weighting.recency is set but sample_weights() got no dates")
+        w = w * recency_weights(dates, half_life)
+    w = w * (len(w) / w.sum())                          # normalize to mean 1 FIRST...
+    clip = sw.get("clip")
+    if clip:                                            # ...so the clip is a ratio cap around 1
+        w = np.clip(w, 1.0 / float(clip), float(clip))
+        w = w * (len(w) / w.sum())                      # renormalize after clipping
+    return w
+
+
+def _level_weights(level, sw):
+    """The curve-level (high-CTR-tail) part of the sample weight, pre-recency/clip."""
+    scheme = sw.get("scheme", "none")
     if scheme == "power":
         gamma = float(sw.get("power", 1.0))
         w = (level / np.median(level)) ** gamma
@@ -150,11 +195,6 @@ def sample_weights(Y, dcfg, ccfg, cb):
         w = 1.0 / counts[idx]                          # rarer bin -> higher weight
     else:
         raise SystemExit(f"unknown sample_weighting scheme {scheme!r}")
-    w = w * (len(w) / w.sum())                         # normalize to mean 1 FIRST...
-    clip = sw.get("clip")
-    if clip:                                           # ...so the clip is a ratio cap around 1
-        w = np.clip(w, 1.0 / float(clip), float(clip))
-        w = w * (len(w) / w.sum())                     # renormalize after clipping
     return w
 
 
@@ -235,12 +275,12 @@ def run(ccfg=None, dcfg=None, pcfg=None):
     pcfg = pcfg or load_yaml(PIPELINE_CONFIG)
     cb = load_codebook(ccfg)
 
-    X, Y, cat, num, pc_cols = assemble(ccfg, dcfg)
-    Xtr, Xte, Ytr, Yte = train_test_split(
-        X, Y, test_size=dcfg["test_size"], random_state=dcfg["random_state"])
+    X, Y, cat, num, pc_cols, dates = assemble(ccfg, dcfg)
+    Xtr, Xte, Ytr, Yte, dtr, _ = train_test_split(
+        X, Y, dates, test_size=dcfg["test_size"], random_state=dcfg["random_state"])
 
     est = build_estimator(pcfg, cat, num)
-    sw = sample_weights(Ytr, dcfg, ccfg, cb)           # None -> uniform
+    sw = sample_weights(Ytr, dcfg, ccfg, cb, dates=dtr)   # None -> uniform
     fit_params = {} if sw is None else {"reg__sample_weight": sw}
     est.fit(Xtr, Ytr, **fit_params)
     Ypred = est.predict(Xte)

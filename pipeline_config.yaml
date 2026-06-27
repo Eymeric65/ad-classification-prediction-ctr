@@ -11,7 +11,9 @@ ridge:
 lightgbm:
   n_estimators: 800        # tuned: 400 underfit badly (all-skill 27.7%->31.0% at 800)
   learning_rate: 0.05
-  num_leaves: 95           # tuned: 31 underfit; curve-space skill peaks ~95, falls by 127
+  num_leaves: 47           # 95 maxed the RANDOM split but overfits FORWARD-IN-TIME; on the
+                           # temporal holdout 47 lifts all-skill 16.8->17.7 (see VALIDATION.md).
+                           # (random-split peak was ~95; the real task is the forward holdout.)
   min_child_samples: 50    # raise to regularize (min rows per leaf)
   subsample: 0.8
   subsample_freq: 1        # subsample only bites when freq > 0

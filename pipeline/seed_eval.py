@@ -31,7 +31,7 @@ pcfg = load_yaml(PIPELINE_CONFIG)
 cb = load_codebook(ccfg)
 cw = component_weights(dcfg, cb, ccfg["n_components"])
 
-X, Y, cat, num, pc_cols = assemble(ccfg, dcfg)
+X, Y, cat, num, pc_cols, dates = assemble(ccfg, dcfg)
 # Platform indicator from the __NA__ sentinel: lap ads carry __NA__ for `device`.
 platform = np.where(X["device"].to_numpy() == "__NA__", "lap", "yda")
 print(f"assembled {len(X):,} ads  ({(platform=='yda').sum():,} yda / "
@@ -48,9 +48,9 @@ def skill(true, pred, baseline, mask=None):
 
 
 def eval_seed(seed):
-    Xtr, Xte, Ytr, Yte, ptr, pte = train_test_split(
-        X, Y, platform, test_size=dcfg["test_size"], random_state=seed)
-    w = sample_weights(Ytr, dcfg, ccfg, cb)
+    Xtr, Xte, Ytr, Yte, ptr, pte, dtr, _ = train_test_split(
+        X, Y, platform, dates, test_size=dcfg["test_size"], random_state=seed)
+    w = sample_weights(Ytr, dcfg, ccfg, cb, dates=dtr)
     est = build_estimator(pcfg, cat, num)
     est.fit(Xtr, Ytr, **({} if w is None else {"reg__sample_weight": w}))
     Yp = est.predict(Xte)

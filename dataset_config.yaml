@@ -15,7 +15,10 @@ features:
   categorical: true   # CAT_COLS      - industry, goal, format, CTA type, size
   area: true          # AREA_COLS     - 10-dim image-composition vector
   ann_flags: true     # ANN_FLAG_COLS - presence flags + face/text counts
-  date: true          # DATE_COLS     - cyclical release-month / day-of-year (seasonality)
+  date: false         # DATE_COLS     - cyclical release-month/day-of-year. Helped the RANDOM
+                      #   split but is mildly TIME-LEAKING forward: on the temporal holdout it
+                      #   depresses the middle/yda buckets, so it's off. min_date still drives
+                      #   recency weighting below (that's a sample weight, not a feature).
   image: true         # IMG_COLS      - per-category mask coverage + centroid (cx,cy)
 
 # --- train/test split -------------------------------------------------------
@@ -34,12 +37,18 @@ random_state: 42
 sample_weighting:
   scheme: threshold  # Pareto-best: max tail skill while the typical ad still beats baseline
   power: 0.75
-  # Jointly tuned with the model (held-out, lightgbm 800/95). threshold=0.0115 is the knee;
-  # boost=8 lifts tail skill to ~34.9% (from ~33.5% at boost 5) while the everyday ad keeps
-  # a comfortable +6.5% margin. boost>8 buys ~1pp more tail but drives the middle negative.
+  # threshold=0.0115 is the knee. boost RETUNED 8->6 for the FORWARD-IN-TIME objective: on the
+  # temporal holdout boost 8 leaves the everyday ad underwater (mid ~0), boost 6 + recency keeps
+  # it comfortably positive (mid ~+7) while the tail stays up (see VALIDATION.md temporal table).
   threshold: 0.0115
-  boost: 8.0
+  boost: 6.0
   clip: 30
+  # Recency time-decay (see pipeline.run.recency_weights): weight ads by how recent they are,
+  # anchored on the newest training ad. The real predict set is a forward holdout, so recent
+  # ads are the closest analogue; half_life=120 days narrowed the temporal-drift gap the most
+  # (all 16.8->17.7, yda 23.1->27.5, middle back above zero) without eroding the tail.
+  recency:
+    half_life: 120   # days; null / omit to disable
 
 # --- per-component RMSE weighting -------------------------------------------
 # PC0 carries ~98.5% of curve variance, so the components are NOT equally

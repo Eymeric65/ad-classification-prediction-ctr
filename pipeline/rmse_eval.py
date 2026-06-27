@@ -46,6 +46,7 @@ df = ads.merge(scores, on=id_col, how="inner").reset_index(drop=True)
 cat, num = feature_columns(dcfg)
 X = df[cat + num]
 Y = df[pc_cols].to_numpy(float)
+dates = pd.to_datetime(df["min_date"]).reset_index(drop=True)   # for recency weighting
 ids = df[id_col].astype(str).to_numpy()
 platform = np.where(df["device"].to_numpy() == "__NA__", "lap", "yda")
 
@@ -70,7 +71,7 @@ def interp_curves_at(curves, pos, day, dmin, dmax):
 def eval_seed(seed):
     idx_tr, idx_te = train_test_split(
         np.arange(len(df)), test_size=dcfg["test_size"], random_state=seed)
-    w = sample_weights(Y[idx_tr], dcfg, ccfg, cb)
+    w = sample_weights(Y[idx_tr], dcfg, ccfg, cb, dates=dates.iloc[idx_tr])
     est = build_estimator(pcfg, cat, num)
     est.fit(X.iloc[idx_tr], Y[idx_tr], **({} if w is None else {"reg__sample_weight": w}))
 
