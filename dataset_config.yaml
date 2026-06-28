@@ -20,6 +20,15 @@ features:
                       #   depresses the middle/yda buckets, so it's off. min_date still drives
                       #   recency weighting below (that's a sample weight, not a feature).
   image: true         # IMG_COLS      - per-category mask coverage + centroid (cx,cy)
+  advertiser: true    # advertiser historical CTR-level (leakage-safe target encoding;
+                      #   90.7% of predict rows have a known advertiser). Finer + more
+                      #   stationary than industry; forward RMSE −1.8%, skill +1.5pp.
+                      #   Added in the fit flow (pipeline/encoding.py), not a static column.
+
+# Advertiser target-encoding smoothing: enc = (sum + alpha*global)/(n + alpha).
+# alpha=20 was the robust knee across temporal cutoffs (see TUNING.md §advertiser).
+advertiser_encoding:
+  alpha: 20
 
 # --- train/test split -------------------------------------------------------
 test_size: 0.2

@@ -31,8 +31,8 @@ from sklearn.model_selection import train_test_split
 
 from compress_curves import decode, load_codebook, load_settings
 from dataset import load_ads
-from pipeline.run import (build_estimator, component_weights, feature_columns,
-                          sample_weights, select_rows, _rmse, load_yaml,
+from pipeline.run import (add_advertiser_feature, build_estimator, component_weights,
+                          feature_columns, sample_weights, select_rows, _rmse, load_yaml,
                           DATASET_CONFIG, PIPELINE_CONFIG)
 
 ccfg = load_settings()
@@ -53,6 +53,7 @@ X = df[cat + num]
 Y = df[pc_cols].to_numpy(float)
 ids = df[id_col].astype(str).to_numpy()
 date = pd.to_datetime(df["min_date"])
+adv = df["advertiser_id"].astype(str)
 platform = np.where(df["device"].to_numpy() == "__NA__", "lap", "yda")
 
 # --- raw laps (grader actuals) + per-ad lifetime for normalized-time mapping ---
@@ -79,11 +80,14 @@ def interp_curves_at(curves, pos, day, dmin, dmax):
 def eval_split(idx_tr, idx_te):
     """Fit on train idx, return grader-RMSE + skill metrics on test idx."""
     w = sample_weights(Y[idx_tr], dcfg, ccfg, cb, dates=date.iloc[idx_tr])  # train-only, no leakage
-    est = build_estimator(pcfg, cat, num)
-    est.fit(X.iloc[idx_tr], Y[idx_tr], **({} if w is None else {"reg__sample_weight": w}))
+    Xtr, Xte, num_l = add_advertiser_feature(
+        X.iloc[idx_tr], X.iloc[idx_te], Y[idx_tr],
+        adv.iloc[idx_tr].to_numpy(), adv.iloc[idx_te].to_numpy(), num, dcfg, ccfg, cb)
+    est = build_estimator(pcfg, cat, num_l)
+    est.fit(Xtr, Y[idx_tr], **({} if w is None else {"reg__sample_weight": w}))
 
     Yte = Y[idx_te]
-    Yp = est.predict(X.iloc[idx_te])
+    Yp = est.predict(Xte)
 
     # --- curve-space skill (decoded CTR) ---
     ct, cp = decode(Yte, ccfg, cb), decode(Yp, ccfg, cb)

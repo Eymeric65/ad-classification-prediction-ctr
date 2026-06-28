@@ -26,8 +26,8 @@ from sklearn.model_selection import train_test_split
 
 from compress_curves import decode, load_codebook, load_settings
 from dataset import load_ads
-from pipeline.run import (build_estimator, feature_columns, load_yaml,
-                          sample_weights, DATASET_CONFIG, PIPELINE_CONFIG)
+from pipeline.run import (add_advertiser_feature, build_estimator, feature_columns,
+                          load_yaml, sample_weights, DATASET_CONFIG, PIPELINE_CONFIG)
 
 ccfg = load_settings()
 dcfg = load_yaml(DATASET_CONFIG)
@@ -47,6 +47,7 @@ cat, num = feature_columns(dcfg)
 X = df[cat + num]
 Y = df[pc_cols].to_numpy(float)
 dates = pd.to_datetime(df["min_date"]).reset_index(drop=True)   # for recency weighting
+adv = df["advertiser_id"].astype(str).reset_index(drop=True)    # for advertiser encoding
 ids = df[id_col].astype(str).to_numpy()
 platform = np.where(df["device"].to_numpy() == "__NA__", "lap", "yda")
 
@@ -72,12 +73,15 @@ def eval_seed(seed):
     idx_tr, idx_te = train_test_split(
         np.arange(len(df)), test_size=dcfg["test_size"], random_state=seed)
     w = sample_weights(Y[idx_tr], dcfg, ccfg, cb, dates=dates.iloc[idx_tr])
-    est = build_estimator(pcfg, cat, num)
-    est.fit(X.iloc[idx_tr], Y[idx_tr], **({} if w is None else {"reg__sample_weight": w}))
+    Xtr, Xte, num_l = add_advertiser_feature(
+        X.iloc[idx_tr], X.iloc[idx_te], Y[idx_tr],
+        adv.iloc[idx_tr].to_numpy(), adv.iloc[idx_te].to_numpy(), num, dcfg, ccfg, cb)
+    est = build_estimator(pcfg, cat, num_l)
+    est.fit(Xtr, Y[idx_tr], **({} if w is None else {"reg__sample_weight": w}))
 
     te_ids = ids[idx_te]
     pos_of = {a: i for i, a in enumerate(te_ids)}
-    curves = decode(est.predict(X.iloc[idx_te]), ccfg, cb)            # (n_te, 50)
+    curves = decode(est.predict(Xte), ccfg, cb)                      # (n_te, 50)
     mean_curve = decode(np.zeros((1, len(pc_cols))), ccfg, cb)        # (1, 50)
 
     L = laps[laps[id_col].isin(set(te_ids))]

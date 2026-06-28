@@ -34,6 +34,13 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from compress_curves import decode, load_codebook, load_settings
 from dataset import ANN_FLAG_COLS, AREA_COLS, CAT_COLS, DATE_COLS, IMG_COLS, load_ads
+from pipeline.encoding import (DEFAULT_ALPHA, encode_loo, encode_new,
+                               fit_advertiser_encoder)
+
+# Name of the (split-dependent) advertiser target-encoding column. It is NOT a static
+# column in ads.parquet — it depends on the target + train/test split — so it is added to
+# X inside the fit flow (see add_advertiser_feature), gated by features.advertiser.
+ADV_COL = "adv_ctr_enc"
 
 DATASET_CONFIG = "dataset_config.yaml"
 PIPELINE_CONFIG = "pipeline_config.yaml"
@@ -94,7 +101,25 @@ def assemble(ccfg, dcfg):
 
     cat, num = feature_columns(dcfg)
     dates = pd.to_datetime(df["min_date"]).reset_index(drop=True)
-    return df[cat + num], df[pc_cols].to_numpy(float), cat, num, pc_cols, dates
+    adv = df["advertiser_id"].astype(str).reset_index(drop=True)   # for advertiser encoding
+    return df[cat + num], df[pc_cols].to_numpy(float), cat, num, pc_cols, dates, adv
+
+
+def add_advertiser_feature(Xtr, Xte, Ytr, adv_tr, adv_te, num, dcfg, ccfg, cb):
+    """If features.advertiser is on, append the leakage-safe advertiser CTR-level encoding.
+
+    Fits the encoder on the training fold only (target = each train ad's decoded curve level),
+    encodes train rows leave-one-out and the held-out rows (test OR the prediction set) from the
+    full-train means. Returns (Xtr, Xte, num) with `num` extended by ADV_COL when enabled.
+    """
+    if not dcfg["features"].get("advertiser"):
+        return Xtr, Xte, num
+    alpha = (dcfg.get("advertiser_encoding") or {}).get("alpha", DEFAULT_ALPHA)
+    level_tr = decode(Ytr, ccfg, cb).mean(axis=1)
+    enc = fit_advertiser_encoder(adv_tr, level_tr, alpha)
+    Xtr = Xtr.copy(); Xtr[ADV_COL] = encode_loo(enc, adv_tr, level_tr)
+    Xte = Xte.copy(); Xte[ADV_COL] = encode_new(enc, adv_te)
+    return Xtr, Xte, num + [ADV_COL]
 
 
 # ---- model ------------------------------------------------------------------
@@ -275,10 +300,11 @@ def run(ccfg=None, dcfg=None, pcfg=None):
     pcfg = pcfg or load_yaml(PIPELINE_CONFIG)
     cb = load_codebook(ccfg)
 
-    X, Y, cat, num, pc_cols, dates = assemble(ccfg, dcfg)
-    Xtr, Xte, Ytr, Yte, dtr, _ = train_test_split(
-        X, Y, dates, test_size=dcfg["test_size"], random_state=dcfg["random_state"])
+    X, Y, cat, num, pc_cols, dates, adv = assemble(ccfg, dcfg)
+    Xtr, Xte, Ytr, Yte, dtr, _, atr, ate = train_test_split(
+        X, Y, dates, adv, test_size=dcfg["test_size"], random_state=dcfg["random_state"])
 
+    Xtr, Xte, num = add_advertiser_feature(Xtr, Xte, Ytr, atr, ate, num, dcfg, ccfg, cb)
     est = build_estimator(pcfg, cat, num)
     sw = sample_weights(Ytr, dcfg, ccfg, cb, dates=dtr)   # None -> uniform
     fit_params = {} if sw is None else {"reg__sample_weight": sw}
