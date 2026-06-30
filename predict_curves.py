@@ -32,9 +32,11 @@ if _ROOT not in sys.path:
 from compress_curves import decode, load_codebook, load_settings
 from dataset import load_predict
 from pipeline.run import (
-    DATASET_CONFIG, PIPELINE_CONFIG, build_estimator, component_weights,
+    ADV_COL, DATASET_CONFIG, PIPELINE_CONFIG, build_estimator, component_weights,
     feature_columns, load_yaml, sample_weights,
 )
+from pipeline.encoding import (DEFAULT_ALPHA, encode_loo, encode_new,
+                               fit_advertiser_encoder)
 
 RESULT_IN = "data/7. result_group_X.csv"
 RESULT_OUT = "data/7. result_group_X_filled.csv"
@@ -59,15 +61,29 @@ def fit_full(ccfg, dcfg, pcfg, cb):
         raise SystemExit("no overlap between ads and scores — run `compress_curves.py fit` first")
 
     cat, num = feature_columns(dcfg)
-    X, Y = df[cat + num], df[pc_cols].to_numpy(float)
+    X, Y = df[cat + num].copy(), df[pc_cols].to_numpy(float)
+
+    # Advertiser encoding: fit on ALL training ads, add the leave-one-out column to X. The
+    # fitted encoder is returned so main() can encode the prediction set from full-train means.
+    enc = None
+    if dcfg["features"].get("advertiser"):
+        alpha = (dcfg.get("advertiser_encoding") or {}).get("alpha", DEFAULT_ALPHA)
+        adv = df["advertiser_id"].astype(str).to_numpy()
+        level = decode(Y, ccfg, cb).mean(axis=1)
+        enc = fit_advertiser_encoder(adv, level, alpha)
+        X[ADV_COL] = encode_loo(enc, adv, level)
+        num = num + [ADV_COL]
 
     est = build_estimator(pcfg, cat, num)
-    sw = sample_weights(Y, dcfg, ccfg, cb)              # same loss weighting as run.py; None -> uniform
+    # same loss weighting as run.py (None -> uniform). dates feed optional recency
+    # weighting; here the anchor is the newest training ad (~2023-04-30), the closest
+    # analogue to the forward predict set.
+    sw = sample_weights(Y, dcfg, ccfg, cb, dates=pd.to_datetime(df["min_date"]))
     fit_params = {} if sw is None else {"reg__sample_weight": sw}
     est.fit(X, Y, **fit_params)
     print(f"  trained {pcfg['model']} on {len(X):,} ads "
           f"({len(cat)} cat + {len(num)} num features -> {len(pc_cols)} PCs)")
-    return est, cat, num, pc_cols
+    return est, cat, num, pc_cols, enc
 
 
 # ---- curve -> per-day cumu_ctr ---------------------------------------------
@@ -115,10 +131,12 @@ def main():
     cb = load_codebook(ccfg)
     id_col = ccfg["columns"]["id"]
 
-    est, cat, num, pc_cols = fit_full(ccfg, dcfg, pcfg, cb)
+    est, cat, num, pc_cols, enc = fit_full(ccfg, dcfg, pcfg, cb)
 
     # Predict PCA scores for the prediction set, then decode to full curves.
-    pred = load_predict()
+    pred = load_predict().copy()
+    if enc is not None:                                  # advertiser encoding from full-train means
+        pred[ADV_COL] = encode_new(enc, pred["advertiser_id"].astype(str).to_numpy())
     Yhat = est.predict(pred[cat + num])
     curves = decode(Yhat, ccfg, cb)                     # (n_ads, grid_points), CTR space
     grid = np.asarray(cb["grid"], float)

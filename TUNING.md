@@ -134,3 +134,94 @@ The +2.9pp all-skill gap is ~3.6× the fold std, and **every** bucket improves (
 
 Harnesses (kept in the session scratchpad, not committed): `tune.py` (stages `model` / `model2` /
 `sw`), `sweep_threshold.py`, `cv_confirm.py`. Each assembles+splits once and refits per config.
+
+---
+
+# Temporal re-tune — 2026-06-27
+
+Everything above was tuned on a **random** split. The real task is a **forward-in-time holdout**
+(train ends `min_date` 2023-04-30, predict 2023-05+), and that geometry *halves* skill
+(~31%→~16%, see VALIDATION.md). So we re-tuned against the right objective: `pipeline/temporal_eval.py`,
+cutoff **2022-11-01** (holds out the last 6mo of training ≈ the predict horizon), maximize all/tail
+**with the middle ≥ 0** — same Pareto rule as above, now forward-in-time. Harness:
+`temporal_experiments.py` (scratchpad) loads once, evaluates all configs on the temporal split.
+
+**Baseline (random-tuned config) on the temporal split:** all 16.8 / tail 18.0 / mid −0.1 / yda 23.1.
+
+### Stage A — capacity (the random-tuned 95 leaves is overfit forward-in-time)
+
+| config | all | tail | mid | yda |
+|---|---|---|---|---|
+| 800/95 (live-then) | 16.8 | 18.0 | −0.1 | 23.1 |
+| 800/63 | 16.8 | 18.3 | −3.4 | 22.7 |
+| 800/**47** | 17.2 | 19.0 | −6.3 | 22.0 |
+| 800/31 | 17.4 | 19.6 | −11.1 | 20.5 |
+| 400/31 | 17.8 | 20.5 | −15.7 | 20.6 |
+
+Lower capacity lifts all/tail but craters the middle. **47 leaves** is the knee once recency +
+date-drop (below) prop the middle back up. (Confirms the 95-leaf random peak was partly fitting
+time-specific structure.)
+
+### Stage B — recency weighting (new lever; `sample_weighting.recency.half_life`, days)
+
+Weight ads by recency, anchored on the newest training ad. The **only** lever that lifts the
+*middle* forward-in-time, and it also helps yda.
+
+| half_life | all | tail | mid | yda |
+|---|---|---|---|---|
+| none | 16.8 | 18.0 | −0.1 | 23.1 |
+| 365d | 17.0 | 18.3 | 0.0 | 23.9 |
+| **120d** | 17.2 | 18.4 | +0.4 | 23.9 |
+| 60d | 17.4 | 19.0 | −3.6 | 23.7 |
+
+**120d** is the sweet spot (shorter starts eroding the middle again).
+
+### Stage C — feature drift audit (drop one group, temporal split)
+
+| drop | all | tail | mid | yda | verdict |
+|---|---|---|---|---|---|
+| date | 16.9 | 17.8 | **+3.8** | **24.8** | mildly time-leaking → **drop** |
+| image | 15.7 | 17.8 | −11.0 | 18.4 | essential, transfers |
+| area | 16.4 | 17.6 | −0.7 | 22.1 | keep |
+| ann_flags | 16.7 | 17.9 | −0.7 | 22.5 | ~neutral, keep |
+| categorical | 6.8 | 7.8 | −7.6 | −1.5 | essential (carries the model) |
+
+Cyclical month/day-of-year helped the random split but is mildly **time-leaking** forward
+(the holdout's seasons map differently than training saw them) — dropping it lifts the middle
+and yda. All other groups transfer; image is the biggest single contributor.
+
+### Stage D — REJECTED: temporal-watch-fold early stopping
+
+Carve the last 2–4mo of *train* as a watch fold, early-stop per PC on it. **Worse across the
+board** (all 15.5–16.1 < 16.8): the watch fold already shows drift, so the shape PCs stop at
+3–30 iters and badly underfit. Not applied.
+
+### Stage E — combo (joint recency × drop-date × capacity × boost)
+
+| config | all | tail | mid | yda |
+|---|---|---|---|---|
+| base 800/95 boost8 | 16.8 | 18.0 | −0.1 | 23.1 |
+| rec120 + drop-date + **47** + **boost6** | **17.7** | 18.5 | **+7.0** | **27.5** |
+| rec120 + drop-date + 63 + boost8 | 17.7 | 18.7 | +4.2 | 27.2 |
+| rec180 + drop-date + 31 (aggr) | 18.1 | 19.6 | −2.4 | 26.5 |
+
+The aggressive 31-leaf variant edges out tail but pushes the middle negative — rejected on the
+same "no fragile middle" rule as the original tuning's 0.008/boost-8 variant.
+
+## Final config (committed — forward-tuned)
+
+- `pipeline_config.yaml`: `num_leaves 95 → 47` (n_estimators 800, lr 0.05 unchanged).
+- `dataset_config.yaml`: `boost 8 → 6`; new `sample_weighting.recency.half_life: 120`;
+  `features.date: true → false`.
+- New code: `pipeline.run.recency_weights` + `sample_weights(..., dates=)`; `assemble()` now
+  returns `dates`; all fit callers thread the ad's `min_date` through.
+
+Verified across 3 horizons (4/6/9mo) — every bucket improves at every horizon (VALIDATION.md).
+Net: ~1pp of the ~14pp drift gap recovered; the larger win is tuning on the correct objective.
+**Tradeoff:** the live config scores worse on the *random* split (all 31.4→27.0, mid +3.8→−14.5)
+— expected, that split is the wrong geometry.
+
+## Reproduce (temporal)
+
+`uv run python pipeline/temporal_eval.py [cutoff ...]` (live config, any cutoff). Sweep harness
+`temporal_experiments.py` is in the session scratchpad (stages `reg`/`recency`/`earlystop`/`audit`/`combo`).
