@@ -1,0 +1,18 @@
+services:
+  claude:
+    build: .
+    image: secure-claude-gpu
+    stdin_open: true
+    tty: true
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+      - /home/eymericchauchat/.claude:/home/claudeuser/.claude
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: ["claude", "--dangerously-skip-permissions"]
